@@ -75,7 +75,7 @@ async def before_daily_random():
 
     # Schedule for next 12pm local time (adjust as desired)
     now = datetime.datetime.now()
-    target = now.replace(hour=14, minute=25, second=0, microsecond=0)
+    target = now.replace(hour=12, minute=0, second=0, microsecond=0)
 
     if now >= target:
         target += datetime.timedelta(days=1)
