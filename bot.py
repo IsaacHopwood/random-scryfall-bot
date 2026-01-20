@@ -73,9 +73,9 @@ async def before_daily_random():
     # Wait until bot is ready
     await client.wait_until_ready()
 
-    # Schedule for next 9am local time (adjust as desired)
+    # Schedule for next 12pm local time (adjust as desired)
     now = datetime.datetime.now()
-    target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    target = now.replace(hour=14, minute=25, second=0, microsecond=0)
 
     if now >= target:
         target += datetime.timedelta(days=1)
