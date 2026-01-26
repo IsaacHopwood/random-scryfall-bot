@@ -4,8 +4,16 @@ from discord.ext import tasks
 import requests
 import datetime
 import asyncio
+import os
+from dotenv import load_dotenv
 
-TOKEN = "MTQ2MzI2MjEzNDgwODA4ODY2Ng.GSuAOf.ew_5G3CMqF38X7iGelDQlzLWEtoNKVBEYpORsE"
+# Load environment variables from .env file
+load_dotenv()
+
+TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("DISCORD_BOT_TOKEN environment variable is not set. Please create a .env file with your token.")
+
 DAILY_QUERY = None  # e.g. "is:commander" or leave None
 
 # Dictionary to store scheduled channels: {channel_id: (hour, minute)}
