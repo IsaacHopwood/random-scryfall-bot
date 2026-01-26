@@ -3,11 +3,12 @@ from discord import app_commands
 from discord.ext import tasks
 import requests
 import datetime
-import asyncio
 
 TOKEN = "MTQ2MzI2MjEzNDgwODA4ODY2Ng.GSuAOf.ew_5G3CMqF38X7iGelDQlzLWEtoNKVBEYpORsE"
-DAILY_CHANNEL_ID = 829459386128269385  # <-- replace
 DAILY_QUERY = None  # e.g. "is:commander" or leave None
+
+# Dictionary to store scheduled channels: {channel_id: (hour, minute)}
+scheduled_channels = {}
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -40,7 +41,8 @@ def build_embed(card):
 @client.event
 async def on_ready():
     await tree.sync()
-    daily_random.start()
+    if not daily_check_task.is_running():
+        daily_check_task.start()
     print(f"Logged in as {client.user}")
 
 @tree.command(name="random", description="Pull a random Magic card from Scryfall")
@@ -55,31 +57,66 @@ async def random_card(interaction: discord.Interaction, query: str = None):
     except Exception:
         await interaction.followup.send("Failed to fetch a card from Scryfall.")
 
-@tasks.loop(hours=24)
-async def daily_random():
-    channel = client.get_channel(DAILY_CHANNEL_ID)
-    if channel is None:
-        return
+@tasks.loop(minutes=1)
+async def daily_check_task():
+    """Check every minute if it's time to send daily cards to any scheduled channels"""
+    now = datetime.datetime.now()
+    current_hour = now.hour
+    current_minute = now.minute
+    
+    # Check each scheduled channel
+    for channel_id, (hour, minute) in list(scheduled_channels.items()):
+        if current_hour == hour and current_minute == minute:
+            channel = client.get_channel(channel_id)
+            if channel is None:
+                # Channel no longer exists, remove from schedule
+                del scheduled_channels[channel_id]
+                continue
+            
+            try:
+                card = fetch_random_card(DAILY_QUERY)
+                embed = build_embed(card)
+                await channel.send("🌅 **Daily Random Card**", embed=embed)
+            except Exception:
+                try:
+                    await channel.send("Failed to fetch today's random card.")
+                except Exception:
+                    # Channel might be deleted or bot doesn't have permission
+                    del scheduled_channels[channel_id]
 
-    try:
-        card = fetch_random_card(DAILY_QUERY)
-        embed = build_embed(card)
-        await channel.send("🌅 **Daily Random Card**", embed=embed)
-    except Exception:
-        await channel.send("Failed to fetch today’s random card.")
-
-@daily_random.before_loop
-async def before_daily_random():
-    # Wait until bot is ready
+@daily_check_task.before_loop
+async def before_daily_check_task():
     await client.wait_until_ready()
 
-    # Schedule for next 12pm local time (adjust as desired)
-    now = datetime.datetime.now()
-    target = now.replace(hour=12, minute=0, second=0, microsecond=0)
-
-    if now >= target:
-        target += datetime.timedelta(days=1)
-
-    await asyncio.sleep((target - now).total_seconds())
+@tree.command(name="daily", description="Schedule the daily random card to be sent at a specific time in this channel")
+@app_commands.describe(hour="Hour in 24-hour format (0-23)", minute="Minute (0-59)", cancel="Set to True to cancel daily messages in this channel")
+async def daily_random(interaction: discord.Interaction, hour: int = None, minute: int = 0, cancel: bool = False):
+    # Handle cancellation
+    if cancel:
+        if interaction.channel_id in scheduled_channels:
+            del scheduled_channels[interaction.channel_id]
+            await interaction.response.send_message("✅ Daily random card schedule cancelled for this channel.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ No daily schedule found for this channel.", ephemeral=True)
+        return
+    
+    # Validate hour is provided when not canceling
+    if hour is None:
+        await interaction.response.send_message("❌ Please provide an hour (0-23) or set cancel to True.", ephemeral=True)
+        return
+    
+    if hour < 0 or hour > 23:
+        await interaction.response.send_message("❌ Hour must be between 0 and 23 (24-hour format).", ephemeral=True)
+        return
+    
+    if minute < 0 or minute > 59:
+        await interaction.response.send_message("❌ Minute must be between 0 and 59.", ephemeral=True)
+        return
+    
+    # Store the channel and time in the schedule
+    scheduled_channels[interaction.channel_id] = (hour, minute)
+    
+    time_str = f"{hour:02d}:{minute:02d}"
+    await interaction.response.send_message(f"✅ Daily random card will be sent daily at **{time_str}** in this channel!", ephemeral=True)
 
 client.run(TOKEN)
