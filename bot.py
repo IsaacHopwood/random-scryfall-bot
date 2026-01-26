@@ -41,6 +41,27 @@ def build_embed(card):
     embed.set_footer(text=f"{card['set_name']} • {card['rarity'].title()}")
     return embed
 
+async def get_channel_reliable(channel_id: int):
+    """Get a channel, trying cache first, then fetching from API if not found"""
+    # Try cache first (faster)
+    channel = client.get_channel(channel_id)
+    if channel is not None:
+        return channel
+    
+    # If not in cache, fetch from API
+    try:
+        channel = await client.fetch_channel(channel_id)
+        return channel
+    except discord.errors.NotFound:
+        print(f"Channel {channel_id} not found (doesn't exist or bot doesn't have access)")
+        return None
+    except discord.errors.Forbidden:
+        print(f"Bot doesn't have permission to access channel {channel_id}")
+        return None
+    except Exception as e:
+        print(f"Error fetching channel {channel_id}: {e}")
+        return None
+
 @client.event
 async def on_ready():
     await tree.sync()
@@ -84,10 +105,10 @@ async def daily_check_task():
                 continue
             
             print(f"Time match! Attempting to send to channel {channel_id} at {current_hour:02d}:{current_minute:02d}")
-            channel = client.get_channel(channel_id)
+            channel = await get_channel_reliable(channel_id)
             if channel is None:
-                # Channel no longer exists, remove from schedule
-                print(f"Channel {channel_id} not found, removing from schedule")
+                # Channel no longer exists or bot doesn't have access, remove from schedule
+                print(f"Channel {channel_id} not found or inaccessible, removing from schedule")
                 del scheduled_channels[channel_id]
                 if channel_id in sent_today:
                     del sent_today[channel_id]
@@ -137,8 +158,9 @@ async def send_daily_card_immediate(channel_id: int, hour: int, minute: int, del
     if channel_id in sent_today and sent_today[channel_id] == today:
         return  # Already sent today
     
-    channel = client.get_channel(channel_id)
+    channel = await get_channel_reliable(channel_id)
     if channel is None:
+        print(f"Could not get channel {channel_id} in immediate task")
         return
     
     try:
