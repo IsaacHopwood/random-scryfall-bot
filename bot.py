@@ -18,7 +18,7 @@ DAILY_QUERY = None  # e.g. "is:commander" or leave None
 
 # Dictionary to store scheduled channels: {channel_id: (hour, minute)}
 scheduled_channels = {}
-# Track which channels have been sent today: {channel_id: date}
+# Track which channels have been sent today: {channel_id: datetime} - stores when the message was sent
 sent_today = {}
 
 intents = discord.Intents.default()
@@ -121,7 +121,7 @@ async def daily_check_task():
         # Check if it's the right time AND we haven't sent to this channel today
         if current_hour == hour and current_minute == minute:
             # Skip if we already sent to this channel today
-            if channel_id in sent_today and sent_today[channel_id] == today:
+            if channel_id in sent_today and sent_today[channel_id].date() == today:
                 print(f"Skipping channel {channel_id} - already sent today")
                 continue
             
@@ -139,8 +139,8 @@ async def daily_check_task():
                 card = fetch_random_card(DAILY_QUERY)
                 embed = build_embed(card)
                 await channel.send("🌅 **Daily Random Card**", embed=embed)
-                # Mark this channel as sent today
-                sent_today[channel_id] = today
+                # Mark this channel as sent today with timestamp
+                sent_today[channel_id] = now
                 print(f"✅ Sent daily card to channel {channel_id} at {current_hour:02d}:{current_minute:02d}")
             except Exception as e:
                 print(f"❌ Error sending daily card to channel {channel_id}: {e}")
@@ -148,7 +148,7 @@ async def daily_check_task():
                 traceback.print_exc()
                 try:
                     await channel.send("Failed to fetch today's random card.")
-                    sent_today[channel_id] = today  # Still mark as sent to prevent retries
+                    sent_today[channel_id] = now  # Still mark as sent to prevent retries
                 except Exception as e2:
                     # Channel might be deleted or bot doesn't have permission
                     print(f"❌ Error accessing channel {channel_id}: {e2}")
@@ -176,7 +176,7 @@ async def send_daily_card_immediate(channel_id: int, hour: int, minute: int, del
     now = datetime.datetime.now()
     today = now.date()
     
-    if channel_id in sent_today and sent_today[channel_id] == today:
+    if channel_id in sent_today and sent_today[channel_id].date() == today:
         return  # Already sent today
     
     channel = await get_channel_reliable(channel_id)
@@ -188,7 +188,7 @@ async def send_daily_card_immediate(channel_id: int, hour: int, minute: int, del
         card = fetch_random_card(DAILY_QUERY)
         embed = build_embed(card)
         await channel.send("🌅 **Daily Random Card**", embed=embed)
-        sent_today[channel_id] = today
+        sent_today[channel_id] = now
         print(f"✅ Sent daily card to channel {channel_id} via immediate task at {hour:02d}:{minute:02d}")
     except Exception as e:
         print(f"❌ Error in immediate task for channel {channel_id}: {e}")
@@ -200,8 +200,45 @@ async def before_daily_check_task():
     await client.wait_until_ready()
 
 @tree.command(name="daily", description="Schedule the daily random card to be sent at a specific time in this channel")
-@app_commands.describe(hour="Hour in 24-hour format (0-23)", minute="Minute (0-59)", cancel="Set to True to cancel daily messages in this channel")
-async def daily_random(interaction: discord.Interaction, hour: int = None, minute: int = 0, cancel: bool = False):
+@app_commands.describe(hour="Hour in 24-hour format (0-23)", minute="Minute (0-59)", cancel="Set to True to cancel daily messages in this channel", status="Set to True to check the current schedule for this channel")
+async def daily_random(interaction: discord.Interaction, hour: int = None, minute: int = 0, cancel: bool = False, status: bool = False):
+    # Handle status check
+    if status:
+        if interaction.channel_id in scheduled_channels:
+            scheduled_hour, scheduled_minute = scheduled_channels[interaction.channel_id]
+            time_str = f"{scheduled_hour:02d}:{scheduled_minute:02d}"
+            # Check if already sent today and get last sent time
+            today = datetime.date.today()
+            channel_id = interaction.channel_id
+            
+            if channel_id in sent_today and sent_today[channel_id].date() == today:
+                last_sent = sent_today[channel_id]
+                last_sent_str = last_sent.strftime("%H:%M:%S")
+                sent_status = f"✅ Already sent today at **{last_sent_str}**"
+            else:
+                sent_status = "⏳ Pending"
+            
+            status_message = f"📅 **Daily Schedule Status**\n\n⏰ Scheduled time: **{time_str}**\n📊 Status: {sent_status}"
+            
+            # If there's a last sent time from a previous day, show it
+            if channel_id in sent_today:
+                last_sent = sent_today[channel_id]
+                if last_sent.date() != today:
+                    last_sent_str = last_sent.strftime("%Y-%m-%d at %H:%M:%S")
+                    status_message += f"\n📆 Last sent: **{last_sent_str}**"
+            
+            await interaction.response.send_message(status_message, ephemeral=True)
+        else:
+            # Show last sent time even if no schedule exists
+            channel_id = interaction.channel_id
+            if channel_id in sent_today:
+                last_sent = sent_today[channel_id]
+                last_sent_str = last_sent.strftime("%Y-%m-%d at %H:%M:%S")
+                await interaction.response.send_message(f"❌ No daily schedule found for this channel.\n📆 Last sent: **{last_sent_str}**\n\nUse `/daily hour:X minute:Y` to set a schedule.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ No daily schedule found for this channel. Use `/daily hour:X minute:Y` to set one.", ephemeral=True)
+        return
+    
     # Handle cancellation
     if cancel:
         if interaction.channel_id in scheduled_channels:
