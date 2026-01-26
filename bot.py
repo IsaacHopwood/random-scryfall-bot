@@ -70,6 +70,19 @@ async def on_ready():
         print("Daily check task started")
     print(f"Logged in as {client.user}")
     print(f"Currently scheduled channels: {len(scheduled_channels)}")
+    
+    # Print invite URL
+    if client.user:
+        permissions = discord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            embed_links=True
+        )
+        invite_url = f"https://discord.com/api/oauth2/authorize?client_id={client.user.id}&permissions={permissions.value}&scope=bot%20applications.commands"
+        print(f"\n{'='*60}")
+        print(f"To invite this bot to your server, use this URL:")
+        print(f"{invite_url}")
+        print(f"{'='*60}\n")
 
 @tree.command(name="random", description="Pull a random Magic card from Scryfall")
 @app_commands.describe(query="Optional Scryfall search query (e.g. is:commander)")
@@ -202,6 +215,26 @@ async def daily_random(interaction: discord.Interaction, hour: int = None, minut
     if minute < 0 or minute > 59:
         await interaction.response.send_message("❌ Minute must be between 0 and 59.", ephemeral=True)
         return
+    
+    # Check if bot has permission to send messages in this channel
+    channel = interaction.channel
+    if channel is None:
+        await interaction.response.send_message("❌ Could not access this channel. Please check bot permissions.", ephemeral=True)
+        return
+    
+    # Check permissions
+    bot_member = channel.guild.get_member(client.user.id) if channel.guild else None
+    if bot_member:
+        permissions = channel.permissions_for(bot_member)
+        if not permissions.view_channel:
+            await interaction.response.send_message("❌ Bot doesn't have permission to **View Channel** in this channel. Please grant this permission.", ephemeral=True)
+            return
+        if not permissions.send_messages:
+            await interaction.response.send_message("❌ Bot doesn't have permission to **Send Messages** in this channel. Please grant this permission.", ephemeral=True)
+            return
+        if not permissions.embed_links:
+            await interaction.response.send_message("❌ Bot doesn't have permission to **Embed Links** in this channel. Please grant this permission.", ephemeral=True)
+            return
     
     # Store the channel and time in the schedule
     scheduled_channels[interaction.channel_id] = (hour, minute)
