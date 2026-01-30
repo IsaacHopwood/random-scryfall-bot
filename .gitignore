@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Bot runtime data
+schedule.json
+
 # Python
 __pycache__/
 *.py[cod]

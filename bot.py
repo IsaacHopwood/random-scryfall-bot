@@ -5,6 +5,7 @@ import requests
 import datetime
 import asyncio
 import os
+import json
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -14,9 +15,13 @@ TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 if not TOKEN:
     raise ValueError("DISCORD_BOT_TOKEN environment variable is not set. Please create a .env file with your token.")
 
-DAILY_QUERY = None  # e.g. "is:commander" or leave None
+DAILY_QUERY = None  # e.g. "is:commander" or leave None (used only if no per-channel query)
 
-# Dictionary to store scheduled channels: {channel_id: (hour, minute)}
+# File to persist scheduled channels across bot restarts
+SCHEDULE_FILE = "schedule.json"
+
+# Dictionary to store scheduled channels: {channel_id: (hour, minute, query)}
+# query is optional Scryfall search (e.g. "is:commander"); None = fully random
 scheduled_channels = {}
 # Track which channels have been sent today: {channel_id: datetime} - stores when the message was sent
 sent_today = {}
@@ -24,6 +29,41 @@ sent_today = {}
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+def _schedule_entry(hour: int, minute: int, query=None):
+    """Normalize a schedule entry to (hour, minute, query)."""
+    return (hour, minute, query if query else None)
+
+def load_schedule():
+    """Load scheduled channels from file (call at startup)."""
+    global scheduled_channels
+    try:
+        if os.path.exists(SCHEDULE_FILE):
+            with open(SCHEDULE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            out = {}
+            for k, v in data.items():
+                channel_id = int(k)
+                if len(v) == 2:
+                    out[channel_id] = (v[0], v[1], None)
+                else:
+                    out[channel_id] = (v[0], v[1], v[2] if v[2] else None)
+            scheduled_channels = out
+            print(f"Loaded {len(scheduled_channels)} scheduled channel(s) from {SCHEDULE_FILE}")
+    except Exception as e:
+        print(f"Could not load schedule file: {e}")
+        scheduled_channels = {}
+
+def save_schedule():
+    """Save scheduled channels to file (call whenever schedule changes)."""
+    try:
+        data = {}
+        for k, v in scheduled_channels.items():
+            data[str(k)] = [v[0], v[1], v[2]]
+        with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Could not save schedule file: {e}")
 
 def fetch_random_card(query=None):
     url = "https://api.scryfall.com/cards/random"
@@ -72,6 +112,7 @@ async def get_channel_reliable(channel_id: int):
 
 @client.event
 async def on_ready():
+    load_schedule()
     await tree.sync()
     if not daily_check_task.is_running():
         daily_check_task.start()
@@ -117,7 +158,7 @@ async def daily_check_task():
         print(f"Checking scheduled channels at {current_hour:02d}:{current_minute:02d} - Scheduled: {list(scheduled_channels.items())}")
     
     # Check each scheduled channel
-    for channel_id, (hour, minute) in list(scheduled_channels.items()):
+    for channel_id, (hour, minute, query) in list(scheduled_channels.items()):
         # Check if it's the right time AND we haven't sent to this channel today
         if current_hour == hour and current_minute == minute:
             # Skip if we already sent to this channel today
@@ -131,12 +172,13 @@ async def daily_check_task():
                 # Channel no longer exists or bot doesn't have access, remove from schedule
                 print(f"Channel {channel_id} not found or inaccessible, removing from schedule")
                 del scheduled_channels[channel_id]
+                save_schedule()
                 if channel_id in sent_today:
                     del sent_today[channel_id]
                 continue
             
             try:
-                card = fetch_random_card(DAILY_QUERY)
+                card = fetch_random_card(query)
                 embed = build_embed(card)
                 await channel.send("🌅 **Daily Random Card**", embed=embed)
                 # Mark this channel as sent today with timestamp
@@ -153,6 +195,7 @@ async def daily_check_task():
                     # Channel might be deleted or bot doesn't have permission
                     print(f"❌ Error accessing channel {channel_id}: {e2}")
                     del scheduled_channels[channel_id]
+                    save_schedule()
                     if channel_id in sent_today:
                         del sent_today[channel_id]
     
@@ -169,7 +212,7 @@ async def send_daily_card_immediate(channel_id: int, hour: int, minute: int, del
     if channel_id not in scheduled_channels:
         return
     
-    scheduled_hour, scheduled_minute = scheduled_channels[channel_id]
+    scheduled_hour, scheduled_minute, scheduled_query = scheduled_channels[channel_id]
     if scheduled_hour != hour or scheduled_minute != minute:
         return  # Schedule was changed
     
@@ -185,7 +228,7 @@ async def send_daily_card_immediate(channel_id: int, hour: int, minute: int, del
         return
     
     try:
-        card = fetch_random_card(DAILY_QUERY)
+        card = fetch_random_card(scheduled_query)
         embed = build_embed(card)
         await channel.send("🌅 **Daily Random Card**", embed=embed)
         sent_today[channel_id] = now
@@ -200,12 +243,12 @@ async def before_daily_check_task():
     await client.wait_until_ready()
 
 @tree.command(name="daily", description="Schedule the daily random card to be sent at a specific time in this channel")
-@app_commands.describe(hour="Hour in 24-hour format (0-23)", minute="Minute (0-59)", cancel="Set to True to cancel daily messages in this channel", status="Set to True to check the current schedule for this channel")
-async def daily_random(interaction: discord.Interaction, hour: int = None, minute: int = 0, cancel: bool = False, status: bool = False):
+@app_commands.describe(hour="Hour in 24-hour format (0-23)", minute="Minute (0-59)", query="Optional Scryfall search (e.g. is:commander); omit for fully random", cancel="Set to True to cancel daily messages in this channel", status="Set to True to check the current schedule for this channel")
+async def daily_random(interaction: discord.Interaction, hour: int = None, minute: int = 0, query: str = None, cancel: bool = False, status: bool = False):
     # Handle status check
     if status:
         if interaction.channel_id in scheduled_channels:
-            scheduled_hour, scheduled_minute = scheduled_channels[interaction.channel_id]
+            scheduled_hour, scheduled_minute, scheduled_query = scheduled_channels[interaction.channel_id]
             time_str = f"{scheduled_hour:02d}:{scheduled_minute:02d}"
             # Check if already sent today and get last sent time
             today = datetime.date.today()
@@ -219,6 +262,10 @@ async def daily_random(interaction: discord.Interaction, hour: int = None, minut
                 sent_status = "⏳ Pending"
             
             status_message = f"📅 **Daily Schedule Status**\n\n⏰ Scheduled time: **{time_str}**\n📊 Status: {sent_status}"
+            if scheduled_query:
+                status_message += f"\n🔍 Query: **{scheduled_query}**"
+            else:
+                status_message += "\n🔍 Query: *random (none)*"
             
             # If there's a last sent time from a previous day, show it
             if channel_id in sent_today:
@@ -243,6 +290,7 @@ async def daily_random(interaction: discord.Interaction, hour: int = None, minut
     if cancel:
         if interaction.channel_id in scheduled_channels:
             del scheduled_channels[interaction.channel_id]
+            save_schedule()
             await interaction.response.send_message("✅ Daily random card schedule cancelled for this channel.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ No daily schedule found for this channel.", ephemeral=True)
@@ -281,8 +329,9 @@ async def daily_random(interaction: discord.Interaction, hour: int = None, minut
             await interaction.response.send_message("❌ Bot doesn't have permission to **Embed Links** in this channel. Please grant this permission.", ephemeral=True)
             return
     
-    # Store the channel and time in the schedule
-    scheduled_channels[interaction.channel_id] = (hour, minute)
+    # Store the channel, time, and optional query in the schedule
+    scheduled_channels[interaction.channel_id] = _schedule_entry(hour, minute, query)
+    save_schedule()
     
     # Check if the scheduled time is today and hasn't passed yet
     now = datetime.datetime.now()
@@ -297,7 +346,12 @@ async def daily_random(interaction: discord.Interaction, hour: int = None, minut
             asyncio.create_task(send_daily_card_immediate(interaction.channel_id, hour, minute, time_until))
     
     time_str = f"{hour:02d}:{minute:02d}"
-    print(f"Scheduled daily card for channel {interaction.channel_id} at {time_str}")
-    await interaction.response.send_message(f"✅ Daily random card will be sent daily at **{time_str}** in this channel!", ephemeral=True)
+    print(f"Scheduled daily card for channel {interaction.channel_id} at {time_str}" + (f" (query: {query})" if query else ""))
+    msg = f"✅ Daily random card will be sent daily at **{time_str}** in this channel!"
+    if query:
+        msg += f"\n🔍 Query: **{query}**"
+    else:
+        msg += "\n🔍 Query: *random*"
+    await interaction.response.send_message(msg, ephemeral=True)
 
 client.run(TOKEN)
