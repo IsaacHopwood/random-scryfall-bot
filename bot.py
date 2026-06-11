@@ -1,7 +1,8 @@
 import discord
 from discord import app_commands
 from discord.ext import tasks
-import requests
+import aiohttp
+from urllib.parse import quote
 import datetime
 import asyncio
 import os
@@ -65,14 +66,13 @@ def save_schedule():
     except Exception as e:
         print(f"Could not save schedule file: {e}")
 
-def fetch_random_card(query=None):
+async def fetch_random_card(query=None):
     url = "https://api.scryfall.com/cards/random"
-    if query:
-        url += f"?q={query}"
-
-    r = requests.get(url)
-    r.raise_for_status()
-    return r.json()
+    params = {"q": query} if query else {}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            r.raise_for_status()
+            return await r.json()
 
 def build_embed(card):
     embed = discord.Embed(
@@ -139,10 +139,11 @@ async def random_card(interaction: discord.Interaction, query: str = None):
     await interaction.response.defer()
 
     try:
-        card = fetch_random_card(query)
+        card = await fetch_random_card(query)
         embed = build_embed(card)
         await interaction.followup.send(embed=embed)
-    except Exception:
+    except Exception as e:
+        print(f"Error in /random: {e}")
         await interaction.followup.send("Failed to fetch a card from Scryfall.")
 
 @tasks.loop(minutes=1)
@@ -178,7 +179,7 @@ async def daily_check_task():
                 continue
             
             try:
-                card = fetch_random_card(query)
+                card = await fetch_random_card(query)
                 embed = build_embed(card)
                 await channel.send("🌅 **Daily Random Card**", embed=embed)
                 # Mark this channel as sent today with timestamp
@@ -228,7 +229,7 @@ async def send_daily_card_immediate(channel_id: int, hour: int, minute: int, del
         return
     
     try:
-        card = fetch_random_card(scheduled_query)
+        card = await fetch_random_card(scheduled_query)
         embed = build_embed(card)
         await channel.send("🌅 **Daily Random Card**", embed=embed)
         sent_today[channel_id] = now
